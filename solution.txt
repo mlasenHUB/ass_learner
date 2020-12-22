@@ -1,0 +1,252 @@
+Introduction
+In this assignment you will recursively estimate the position of a vehicle along a trajectory using available measurements and a motion model.
+
+The vehicle is equipped with a very simple type of LIDAR sensor, which returns range and bearing measurements corresponding to individual landmarks in the environment. The global positions of the landmarks are assumed to be known beforehand. We will also assume known data association, that is, which measurment belong to which landmark.
+
+Motion and Measurement Models
+Motion Model
+The vehicle motion model recieves linear and angular velocity odometry readings as inputs, and outputs the state (i.e., the 2D pose) of the vehicle:
+
+𝐱𝑘=𝐱𝑘−1+𝑇cos𝜃𝑘−1sin𝜃𝑘−10001([𝑣𝑘𝜔𝑘]+𝐰𝑘),𝐰𝑘=(0,𝐐)
+ 
+𝐱𝑘=[𝑥𝑦𝜃]𝑇  is the current 2D pose of the vehicle
+𝑣𝑘  and  𝜔𝑘  are the linear and angular velocity odometry readings, which we use as inputs to the model
+The process noise  𝐰𝑘  has a (zero mean) normal distribution with a constant covariance  𝐐 .
+
+Measurement Model
+The measurement model relates the current pose of the vehicle to the LIDAR range and bearing measurements  𝐲𝑙𝑘=[𝑟𝜙]𝑇 .
+
+𝐲𝑙𝑘=[(𝑥𝑙−𝑥𝑘−𝑑cos𝜃𝑘)2+(𝑦𝑙−𝑦𝑘−𝑑sin𝜃𝑘)2⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯√𝑎𝑡𝑎𝑛2(𝑦𝑙−𝑦𝑘−𝑑sin𝜃𝑘,𝑥𝑙−𝑥𝑘−𝑑cos𝜃𝑘)−𝜃𝑘]+𝐧𝑙𝑘,𝐧𝑙𝑘=(0,𝐑)
+ 
+𝑥𝑙  and  𝑦𝑙  are the ground truth coordinates of the landmark  𝑙 
+𝑥𝑘  and  𝑦𝑘  and  𝜃𝑘  represent the current pose of the vehicle
+𝑑  is the known distance between robot center and laser rangefinder (LIDAR)
+The landmark measurement noise  𝐧𝑙𝑘  has a (zero mean) normal distribution with a constant covariance  𝐑 .
+
+Getting Started
+Since the models above are nonlinear, we recommend using the extended Kalman filter (EKF) as the state estimator. Specifically, you will need to provide code implementing the following steps:
+
+the prediction step, which uses odometry measurements and the motion model to produce a state and covariance estimate at a given timestep, and
+the correction step, which uses the range and bearing measurements provided by the LIDAR to correct the pose and pose covariance estimates
+Unpack the Data
+First, let's unpack the available data:
+
+#
+import pickle
+import numpy as np
+import matplotlib.pyplot as plt
+​
+with open('data/data.pickle', 'rb') as f:
+    data = pickle.load(f)
+​
+t = data['t']  # timestamps [s]
+​
+x_init  = data['x_init'] # initial x position [m]
+y_init  = data['y_init'] # initial y position [m]
+th_init = data['th_init'] # initial theta position [rad]
+​
+# input signal
+v  = data['v']  # translational velocity input [m/s]
+om = data['om']  # rotational velocity input [rad/s]
+​
+# bearing and range measurements, LIDAR constants
+b = data['b']  # bearing to each landmarks center in the frame attached to the laser [rad]
+r = data['r']  # range measurements [m]
+l = data['l']  # x,y positions of landmarks [m]
+d = data['d']  # distance between robot center and laser rangefinder [m]
+#print(v.shape)
+#print(wraptopi(th_init))
+#print(t.shape)
+#print(b.shape)
+#print(r.shape)
+#print(l.shape)
+#print(d.shape)
+​
+Note that distance from the LIDAR frame to the robot center is provided and loaded as an array into the d variable.
+
+Ground Truth
+If available, it is useful to plot the ground truth position and orientation before starting the assignment.
+
+Ground Truth	Ground Truth
+Notice that the orientation values are wrapped to the [−𝜋,𝜋] range in radians.
+
+Initializing Parameters
+Now that our data is loaded, we can begin getting things set up for our solver. One of the most important aspects of designing a filter is determining the input and measurement noise covariance matrices, as well as the initial state and covariance values. We set the values here:
+
+v_var = 0.001  # translation velocity variance  #change to something small for smooth trayectories and angles
+om_var = 10  # rotational velocity variance 
+r_var = 0.01  # range measurements variance #change to something small for smooth trayectories and angles
+b_var = 0.01  # bearing measurement variance #change to something small for smooth trayectories and angles
+​
+Q_km = np.diag([v_var, om_var]) # input noise covariance 
+#print(Q_km.shape)
+cov_y = np.diag([r_var, b_var])  # measurement noise covariance 
+​
+x_est = np.zeros([len(v), 3])  # estimated states, x, y, and theta
+P_est = np.zeros([len(v), 3, 3])  # state covariance matrices
+#print(P_est.shape)
+​
+x_est[0] = np.array([x_init, y_init, th_init]) # initial state
+#print(x_est[0])
+P_est[0] = np.diag([1, 1, 0.1]) # initial state covariance
+Remember: that it is neccessary to tune the measurement noise variances r_var, b_var in order for the filter to perform well!
+
+In order for the orientation estimates to coincide with the bearing measurements, it is also neccessary to wrap all estimated 𝜃 values to the (−𝜋,𝜋] range.
+
+# Wraps angle to (-pi,pi] range
+#This is not working as provided, need to change function, use np.mod() to obtain numpy.float64 type as they are used like that throughout the notebook
+def wraptopi(x):
+    #if x > np.pi:
+    #    x = x - (np.floor(x / (2 * np.pi)) + 1) * 2 * np.pi
+    #elif x < -np.pi:
+    #    x = x + (np.floor(x / (-2 * np.pi)) + 1) * 2 * np.pi
+    x = (np.mod(x / np.pi + 1, 2) - 1) * np.pi
+    
+    
+    return x
+Correction Step
+First, let's implement the measurement update function, which takes an available landmark measurement 𝑙 and updates the current state estimate 𝐱ˇ𝑘. For each landmark measurement received at a given timestep 𝑘, you should implement the following steps:
+
+Compute the measurement model Jacobians at 𝐱ˇ𝑘
+𝐲𝑙𝑘=𝐇𝑘=∂𝐡∂𝐱𝑘||||𝐱ˇ𝑘,0𝐡(𝐱𝑘,𝐧𝑙𝑘),𝐌𝑘=∂𝐡∂𝐧𝑘||||𝐱ˇ𝑘,0.
+Compute the Kalman Gain
+𝐊𝑘=𝐏ˇ𝑘𝐇𝑇𝑘(𝐇𝑘𝐏ˇ𝑘𝐇𝑇𝑘+𝐌𝑘𝐑𝑘𝐌𝑇𝑘)−1
+Correct the predicted state
+𝐲ˇ𝑙𝑘𝐱̂ 𝑘=𝐡(𝐱ˇ𝑘,0)=𝐱ˇ𝑘+𝐊𝑘(𝐲𝑙𝑘−𝐲ˇ𝑙𝑘)
+Correct the covariance
+𝐏̂ 𝑘=(𝐈−𝐊𝑘𝐇𝑘)𝐏ˇ𝑘
+print(d)
+[0]
+def measurement_update(lk, rk, bk, P_check, x_check):
+    xl = lk[0]; yl = lk[1] # extract the position of the landmarks in the global coord. system
+    xk = x_check[0]
+    yk = x_check[1] 
+    thk = wraptopi(x_check[2])
+    
+    # 1. Compute measurement Jacobian
+    H_k = np.zeros((2, 3))
+    x_bracket = xl-xk
+    y_bracket = yl-yk
+    sqrt = np.sqrt((x_bracket)**2 + (y_bracket)**2)    
+    #derivatives of the range: r
+    H_k[0, 0] = -1*x_bracket/sqrt # dr/dxk
+    H_k[0, 1] = -1*y_bracket/sqrt # dr/dyk
+    
+        
+    M_k = np.eye(2)
+    #derivative of the bearing phi
+    
+    der_den = (x_bracket)**2 + (y_bracket)**2 # denominator of the tan^-1 derivative
+    H_k[1, 0] =   y_bracket/der_den #dphi/dxk
+    H_k[1, 1] =  -1*x_bracket/der_den #dphi/dyk
+    H_k[1, 2] =  - 1 #note that d =0
+    # dphi/dthetak
+    
+​
+    # 2. Compute Kalman Gain
+    K_k = P_check@H_k.T@(np.linalg.inv(H_k@P_check@H_k.T + M_k@cov_y@M_k.T))
+    # 3. Correct predicted state (remember to wrap the angles to [-pi,pi])
+        #first evaluate y=(r, phi) at x_check
+    y_check = np.zeros((2,))
+    y_check[0] = np.sqrt((xl - xk)**2 + (yl - yk)**2) # range
+    y_check[1] = wraptopi(np.arctan2(yl-yk, xl-xk)) - thk #lidar angle: b
+    y_check[1] = wraptopi(y_check[1])
+    #print(y_check[1])
+    
+    
+    y_l_k = np.array([rk, wraptopi(bk)]).T # build the prediction vector from r and b given
+    #print(x_check.shape)
+    #print(y_l_k.shape)
+    #print(y_check.shape)
+    #print(K_k.shape)
+    #    a= (y_l_k - y_check)
+    #print(a)
+    x_check = x_check + K_k @ (y_l_k - y_check)
+    x_check[2] = wraptopi(x_check[2])
+​
+    # 4. Correct covariance
+    #I_3x3 because there are 3 dofs: x, y and theta 
+    P_check = (np.eye(3)-K_k@(H_k))@P_check
+    return x_check, P_check
+​
+Prediction Step
+Now, implement the main filter loop, defining the prediction step of the EKF using the motion model provided:
+
+𝐱ˇ𝑘𝐏ˇ𝑘=𝐟(𝐱̂ 𝑘−1,𝐮𝑘−1,0)=𝐅𝑘−1𝐏̂ 𝑘−1𝐅𝑇𝑘−1+𝐋𝑘−1𝐐𝑘−1𝐋𝑇𝑘−1.
+Where
+
+𝐅𝑘−1=∂𝐟∂𝐱𝑘−1||||𝐱̂ 𝑘−1,𝐮𝑘,0,𝐋𝑘−1=∂𝐟∂𝐰𝑘||||𝐱̂ 𝑘−1,𝐮𝑘,0.
+but 
+#### 5. Main Filter Loop #######################################################################
+for k in range(1, len(t)):  # start at 1 because we've set the initial prediciton
+​
+    delta_t = t[k] - t[k - 1]  # time step (difference between timestamps)
+​
+    # 1. Update state with odometry readings (remember to wrap the angles to [-pi,pi])
+    x_check = np.zeros(3)
+    
+    #best estimate available for this step..
+    th_es = wraptopi(x_est[k-1, 2])
+    #updating matrix (same as L_km, but before x_check updating)
+    U_m = np.zeros([3, 2])
+    U_m[0, 0] = delta_t*np.cos(th_es)
+    U_m[1, 0] = delta_t*np.sin(th_es)
+    U_m[2, 1] = delta_t
+    
+    x_check = x_est[k-1] + delta_t * U_m @ (np.array([v[k], om[k]]).T)
+    th_es = wraptopi(x_check[2])
+    
+​
+    # 2. Motion model jacobian with respect to last state
+    F_km = np.zeros([3, 3])
+    F_km = np.eye(3)
+    F_km[0, 2] = -delta_t*v[k-1]*np.sin(th_es)#dx/dth
+    #print(F_km[0,2])
+    F_km[1, 2] = delta_t*v[k-1]*np.cos(th_es)
+    # 3. Motion model jacobian with respect to noise
+    L_km = np.zeros([3, 2])
+    L_km[0, 0] = delta_t*np.cos(th_es)
+    L_km[1, 0] = delta_t*np.sin(th_es)
+    L_km[2, 1] = delta_t
+​
+    # 4. Propagate uncertainty
+    P_hat = P_est[k-1, :, :]#estimated uncertainty at previous step
+    #note that Q_km has constant variance : white noise
+    P_check = F_km@P_hat@F_km.T + L_km@Q_km@L_km.T
+    #print(P_check.shape)
+    
+    
+    #print(x_check.shape)
+​
+    # 5. Update state estimate using available landmark measurements
+    for i in range(len(r[k])):
+        x_check, P_check = measurement_update(l[i], r[k, i], b[k, i], P_check, x_check)
+​
+    # Set final state predictions for timestep
+    x_est[k, 0] = x_check[0]
+    x_est[k, 1] = x_check[1]
+    x_est[k, 2] = x_check[2]
+    P_est[k, :, :] = P_check
+Let's plot the resulting state estimates:
+
+e_fig = plt.figure()
+ax = e_fig.add_subplot(111)
+ax.plot(x_est[:, 0], x_est[:, 1])
+ax.set_xlabel('x [m]')
+ax.set_ylabel('y [m]')
+ax.set_title('Estimated trajectory')
+plt.show()
+​
+e_fig = plt.figure()
+ax = e_fig.add_subplot(111)
+ax.plot(t[:], x_est[:, 2])
+ax.set_xlabel('Time [s]')
+ax.set_ylabel('theta [rad]')
+ax.set_title('Estimated trajectory')
+plt.show()
+
+
+Are you satisfied wth your results? The resulting trajectory should closely resemble the ground truth, with minor "jumps" in the orientation estimate due to angle wrapping. If this is the case, run the code below to produce your solution file.
+
+with open('submission.pkl', 'wb') as f:
+    pickle.dump(x_est, f, pickle.HIGHEST_PROTOCOL)
